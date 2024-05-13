@@ -1,0 +1,18 @@
+include:
+  module:
+    # Import all the Azure Well-Architected Framework rules
+    - PSRule.Rules.Azure
+
+# YAML: Enable expansion for Bicep source files.
+configuration:
+  AZURE_BICEP_FILE_EXPANSION: true
+  # Validate that the bicep CLI is used
+  AZURE_BICEP_CHECK_TOOL: true
+
+input:
+  pathIgnore:
+  # Exclude module files
+  - '**/ps-rule.yaml'
+  - '**/bicepconfig.json'
+  # Include test files for modules
+  - '!**/*1.bicep'
