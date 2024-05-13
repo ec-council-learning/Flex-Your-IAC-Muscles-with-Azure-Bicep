@@ -1,0 +1,209 @@
+trigger: none
+
+name: $(Build.DefinitionName)_$(date:yyyyMMdd)$(Rev:.r)
+
+variables:
+  vmImageName: 'ubuntu-latest'
+  azureServiceConnection: 'EC-Council-Labs-AllRG-ServiceConn'
+  resourceGroupNameDev: 'eccouncil-bicep'
+  resourceGroupNameSbx: 'eccouncil-bicep-sbx'
+  bicepFile: 'EC-Council.Demo.IaC/main.bicep'
+  bicepParamFileDev: 'EC-Council.Demo.IaC/parameters/main-dev.bicepparam'
+  bicepParamFileSbx: 'EC-Council.Demo.IaC/parameters/main-sbx.bicepparam'
+  deploymentName: $[replace(variables['Build.BuildNumber'], ' ', '_')]
+
+# Resources for the shared IaC templates
+resources:
+  repositories:
+    - repository: commonIaC
+      type: git
+      name: 'Shared.IaC.Templates/Shared.IaC.Templates'
+      ref: refs/tags/1.1.0
+
+pool:
+  vmImage: $(vmImageName)
+
+stages:
+
+ - stage: CheckoutAndMoveFiles
+   jobs:
+    - job: CheckoutCode
+      displayName: Checking out bicep files
+      steps:
+
+      - checkout: self
+        persistCredentials: true  # Persist the credentials for subsequent steps
+      - checkout: commonIaC
+
+      - task: PublishBuildArtifacts@1
+        inputs:
+          pathtoPublish: '$(System.DefaultWorkingDirectory)'
+          artifactName: BicepTemplates
+
+ - stage: Lint 
+   dependsOn: CheckoutAndMoveFiles
+   jobs: 
+    - job: LintCode
+      displayName: Linting LintCode
+      steps:
+        - checkout: none #skip checking out the default repository resource
+        - task: DownloadBuildArtifacts@0
+          displayName: 'Download Build Artifacts'
+          inputs:
+            artifactName: BicepTemplates
+            downloadPath: $(Build.ArtifactStagingDirectory)
+
+        - script: |
+           az bicep lint --file $(Build.ArtifactStagingDirectory)/BicepTemplates/$(bicepFile) 
+          name: LintBicepCode
+          displayName: Run Bicep Linter
+          
+        - script: |
+           az bicep build --file $(Build.ArtifactStagingDirectory)/BicepTemplates/$(bicepFile) 
+          name: BuildBicepCode
+          displayName: Run Bicep Build
+
+ - stage: Validate
+   dependsOn: Lint
+   jobs:
+    - job: ValidateBicepCode
+      displayName: Validate Deployment
+      steps:
+        - checkout: none #skip checking out the default repository resource
+        - task: DownloadBuildArtifacts@0
+          displayName: 'Download Build Artifacts'
+          inputs:
+            artifactName: BicepTemplates
+            downloadPath: $(Build.ArtifactStagingDirectory)
+
+        # Validate using dev resource group
+        - task: AzureCLI@2
+          name: RunValidation
+          displayName: Run vailidation
+          inputs:
+            azureSubscription: $(azureServiceConnection)
+            scriptType: bash
+            scriptLocation: inlineScript
+            useGlobalConfig: true
+            inlineScript: |
+              az deployment group Validate \
+                --resource-group $(resourceGroupNameDev) \
+                --parameters $(Build.ArtifactStagingDirectory)/BicepTemplates/$(bicepParamFileDev)
+
+ - stage: DevWhatIf
+   dependsOn: Validate
+   jobs:
+    - job: WhatIfDev
+      displayName: What-if Dev
+      steps:
+        - checkout: none #skip checking out the default repository resource
+        - task: DownloadBuildArtifacts@0
+          displayName: 'Download Build Artifacts'
+          inputs:
+            artifactName: BicepTemplates
+            downloadPath: $(Build.ArtifactStagingDirectory)
+
+         # Use What- validation
+        - task: AzureCLI@2
+          name: RunWhatIfDev
+          displayName: Run What-if Dev
+          inputs:
+            azureSubscription: $(azureServiceConnection)
+            scriptType: bash
+            scriptLocation: inlineScript
+            useGlobalConfig: true
+            inlineScript: |
+              az deployment group What-if \
+                --resource-group $(resourceGroupNameDev) \
+                --parameters $(Build.ArtifactStagingDirectory)/BicepTemplates/$(bicepParamFileDev)
+
+ - stage: DeployDev
+   dependsOn: DevWhatIf
+   jobs:
+    - deployment: 
+      environment: 'Dev'
+      displayName: Deployment Dev
+      strategy:
+       runOnce:
+        deploy:
+          steps:
+            - script: echo "Deploying the project with name $(deploymentName)"
+            - checkout: none #skip checking out the default repository resource
+            - task: DownloadBuildArtifacts@0
+              displayName: 'Download Build Artifacts'
+              inputs:
+                artifactName: BicepTemplates
+                downloadPath: $(Build.ArtifactStagingDirectory)
+
+            - task: AzureCLI@2
+              inputs:
+                azureSubscription: $(azureServiceConnection)
+                scriptType: bash
+                scriptLocation: inlineScript
+                useGlobalConfig: true
+                inlineScript: |
+                  az --version
+                  az deployment group create \
+                    --resource-group $(resourceGroupNameDev) \
+                    --parameters $(Build.ArtifactStagingDirectory)/BicepTemplates/$(bicepParamFileDev) \
+                    --name '$(deploymentName)'
+
+ - stage: SbxWhatIf
+   dependsOn: DeployDev
+   jobs:
+    - job: WhatIfSbx
+      displayName: What-if Sbx
+      steps:
+        - checkout: none #skip checking out the default repository resource
+        - task: DownloadBuildArtifacts@0
+          displayName: 'Download Build Artifacts'
+          inputs:
+            artifactName: BicepTemplates
+            downloadPath: $(Build.ArtifactStagingDirectory)
+
+        # Use What- validation
+        - task: AzureCLI@2
+          name: RunWhatIfSbx
+          displayName: Run What-if Sbx
+          inputs:
+            azureSubscription: $(azureServiceConnection)
+            scriptType: bash
+            scriptLocation: inlineScript
+            useGlobalConfig: true
+            inlineScript: |
+              az deployment group What-if \
+                --resource-group $(resourceGroupNameSbx) \
+                --parameters $(Build.ArtifactStagingDirectory)/BicepTemplates/$(bicepParamFileSbx)
+
+
+ - stage: DeploySbx
+   dependsOn: SbxWhatIf
+   jobs:
+    - deployment:
+      environment: 'Sbx'
+      displayName: Deployment Sbx
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+              - checkout: none #skip checking out the default repository resource
+              - task: DownloadBuildArtifacts@0
+                displayName: 'Download Build Artifacts'
+                inputs:
+                  artifactName: BicepTemplates
+                  downloadPath: $(Build.ArtifactStagingDirectory)
+
+              - task: AzureCLI@2
+                inputs:
+                  azureSubscription: $(azureServiceConnection)
+                  scriptType: bash
+                  scriptLocation: inlineScript
+                  useGlobalConfig: true
+                  inlineScript: |
+                    az --version
+                    az deployment group create \
+                      --resource-group $(resourceGroupNameSbx) \
+                      --parameters $(Build.ArtifactStagingDirectory)/BicepTemplates/$(bicepParamFileSbx) \
+                      --name '$(deploymentName)'
+
+
