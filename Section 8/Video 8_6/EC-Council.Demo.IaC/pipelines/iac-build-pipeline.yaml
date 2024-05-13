@@ -1,0 +1,91 @@
+trigger:
+ - main
+
+name: Deploy Bicep files
+
+
+variables:
+  vmImageName: 'ubuntu-latest'
+  azureServiceConnection: 'EC-Council-Labs-AllRG-ServiceConn'
+  resourceGroupName: 'eccouncil-bicep'
+  bicepFile: 'EC-Council.Demo.IaC/main.bicep'
+  bicepParamFile: 'EC-Council.Demo.IaC/parameters/main-dev.bicepparam'
+
+resources:
+  repositories:
+    - repository: commonIaC
+      type: git
+      name: 'Shared.IaC.Templates/Shared.IaC.Templates'
+      ref: refs/tags/1.1.0
+
+pool:
+  vmImage: $(vmImageName)
+
+stages:
+
+ - stage: CheckoutAndMoveFiles
+   jobs:
+    - job: CheckoutCode
+      displayName: Checking out bicep files
+      steps:
+      - checkout: self
+        persistCredentials: true  # Persist the credentials for subsequent steps
+      - checkout: commonIaC
+
+      - task: PublishBuildArtifacts@1
+        inputs:
+          pathtoPublish: '$(System.DefaultWorkingDirectory)'
+          artifactName: BicepTemplates
+
+ - stage: Lint 
+   dependsOn: CheckoutAndMoveFiles
+   jobs: 
+    - job: LintCode
+      displayName: Linting LintCode
+      steps:
+        - checkout: none #skip checking out the default repository resource
+        - task: DownloadBuildArtifacts@0
+          displayName: 'Download Build Artifacts'
+          inputs:
+            artifactName: BicepTemplates
+            downloadPath: $(Build.ArtifactStagingDirectory)
+
+        - script: |
+           az bicep lint --file $(Build.ArtifactStagingDirectory)/BicepTemplates/$(bicepFile) 
+          name: LintBicepCode
+          displayName: Run Bicep Linter
+          
+        - script: |
+           az bicep build --file $(Build.ArtifactStagingDirectory)/BicepTemplates/$(bicepFile) 
+          name: BuildBicepCode
+          displayName: Run Bicep Build
+
+ - stage: Validate
+   dependsOn: Lint
+   jobs:
+    - job: ValidateBicepCode
+      displayName: Validate Bicep LintCode
+      steps:
+        - checkout: none #skip checking out the default repository resource
+        - task: DownloadBuildArtifacts@0
+          displayName: 'Download Build Artifacts'
+          inputs:
+            artifactName: BicepTemplates
+            downloadPath: $(Build.ArtifactStagingDirectory)
+
+        - task: AzureCLI@2
+          name: RunValidation
+          displayName: Run vailidation
+          inputs:
+            azureSubscription: $(azureServiceConnection)
+            scriptType: bash
+            scriptLocation: inlineScript
+            useGlobalConfig: true
+            inlineScript: |
+              az deployment group Validate \
+                --resource-group $(resourceGroupName) \
+                --parameters $(Build.ArtifactStagingDirectory)/BicepTemplates/$(bicepParamFile)
+
+
+
+
